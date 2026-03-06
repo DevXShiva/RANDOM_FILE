@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ================= CONFIGURATION =================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1002686058050"))
 PORT = int(os.getenv("PORT", "8080"))
 
 ADMINS_STR = os.getenv("ADMIN_IDS", "5298223577")
@@ -40,11 +40,11 @@ UPI_ID = os.getenv("UPI_ID", "your-upi@paytm")
 PLAN_IMG_URL = "https://graph.org/file/56b5deb73f3b132e2bb73.jpg" 
 
 # ================= CHANNEL SETUP =================
-FORCE_SUB_CHANNELS = [-1002302092974, -1003208417224, -1003549158411]
+FORCE_SUB_CHANNELS = [-1003627956964]
 CATEGORY_CHANNELS = {
-    "🎬 All ": -1003822965491,
+    "🎬 All ": -1003626042952,
 }
-DEFAULT_CHANNEL = -1002539932770
+DEFAULT_CHANNEL = -1003626042952
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
