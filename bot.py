@@ -95,7 +95,7 @@ def format_datetime(dt_str):
 async def send_log(bot, log_type, user, additional_text=""):
     if log_type == "NEW_USER":
         text = (
-            "#NewUser\n\n"
+            "#New_User\n\n"
             f"Iᴅ - <code>{user.id}</code>\n"
             f"Nᴀᴍᴇ - {user.full_name}\n"
             f"Dᴀᴛᴇ - {get_ist_now().strftime('%d/%m/%Y')}"
