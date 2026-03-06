@@ -48,7 +48,7 @@ DEFAULT_CHANNEL = -1003896169281
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
-REFERRAL_REQUIREMENT = 1 
+REFERRAL_REQUIREMENT = 1  # Users needed for 1 Day Free Premium
 MAX_DAILY_VIDEOS_FREE = 5 
 MAX_DAILY_VIDEOS_PREMIUM = 100
 AUTO_DELETE_SECONDS = 600 # 10 Minutes
@@ -73,7 +73,7 @@ client = AsyncIOMotorClient(
 db = client["telegram_bot_db"]
 users_col = db["users"]
 media_col = db["media"]
-proofs_col = db["pending_proofs"] # New collection for storing proofs
+proofs_col = db["pending_proofs"]
 
 # ================= UTILITY FUNCTIONS =================
 
@@ -95,7 +95,7 @@ def format_datetime(dt_str):
 async def send_log(bot, log_type, user, additional_text=""):
     if log_type == "NEW_USER":
         text = (
-            "#New_User\n\n"
+            "#NewUser\n\n"
             f"Iᴅ - <code>{user.id}</code>\n"
             f"Nᴀᴍᴇ - {user.full_name}\n"
             f"Dᴀᴛᴇ - {get_ist_now().strftime('%d/%m/%Y')}"
@@ -143,7 +143,7 @@ def get_plans_keyboard():
         [InlineKeyboardButton("1 Month - ₹50", callback_data="pay_1"),
          InlineKeyboardButton("2 Months - ₹90", callback_data="pay_2")],
         [InlineKeyboardButton("3 Months - ₹130", callback_data="pay_3")],
-        [InlineKeyboardButton("🎁 Free 1 Day Premium (Referral)", callback_data="plan_referral")],
+        [InlineKeyboardButton(f"🎁 Free 1 Day ({REFERRAL_REQUIREMENT} Refers)", callback_data="plan_referral")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu_del")] 
     ])
 
@@ -161,7 +161,6 @@ def get_category_keyboard():
     return InlineKeyboardMarkup(buttons)
 
 async def get_admin_keyboard():
-    # Dynamic keyboard showing pending proof count
     count = await proofs_col.count_documents({})
     proof_text = f"🔔 Pending Proofs ({count})" if count > 0 else "🔔 No Pending Proofs"
     
@@ -211,20 +210,39 @@ class UserManager:
             return True
         return False
 
-    async def add_referral(self, referrer_id):
+    async def add_referral(self, referrer_id, context):
+        """
+        Increments referral count.
+        If user hits the requirement (e.g., 3, 6, 9...), grants 1 Day Premium automatically.
+        """
         referrer = await self.get_user(referrer_id)
-        if referrer:
-            new_refs = referrer.get("referrals", 0) + 1
-            upd = {"referrals": new_refs}
-            if new_refs % REFERRAL_REQUIREMENT == 0:
-                try:
-                    current_exp = datetime.fromisoformat(referrer["expires"])
-                    if current_exp < get_ist_now().replace(tzinfo=None): 
-                        current_exp = get_ist_now().replace(tzinfo=None)
-                    new_exp = current_exp + timedelta(days=1)
-                    upd.update({"expires": new_exp.isoformat(), "plan": "premium"})
-                except: pass
-            await self.update_user(referrer_id, upd)
+        if not referrer: return
+
+        # Increment count
+        new_refs = referrer.get("referrals", 0) + 1
+        await self.update_user(referrer_id, {"referrals": new_refs})
+
+        # Check if they hit the target (Modulo logic)
+        # e.g., if req=3, then 3, 6, 9 triggers the reward
+        if new_refs % REFERRAL_REQUIREMENT == 0:
+            # Grant 1 Day Premium
+            new_exp = await self.set_premium(referrer_id, 1)
+            
+            # Send Notification
+            try:
+                await context.bot.send_message(
+                    chat_id=referrer_id,
+                    text=(
+                        f"🎉 <b>Congratulations!</b>\n\n"
+                        f"You have referred {new_refs} users in total.\n"
+                        f"✅ <b>1 Day Free Premium</b> has been activated!\n\n"
+                        f"⏳ <b>New Expiry:</b> {format_datetime(new_exp)}\n\n"
+                        f"<i>Refer {REFERRAL_REQUIREMENT} more new users to get another day!</i>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify referrer {referrer_id}: {e}")
 
     async def is_premium(self, user_id):
         user = await self.get_user(user_id)
@@ -238,6 +256,8 @@ class UserManager:
     async def set_premium(self, user_id, days):
         user = await self.get_user(user_id)
         start_date = get_ist_now().replace(tzinfo=None)
+        
+        # If user is already premium, add days to their current expiry
         if user:
             try:
                 current_exp = datetime.fromisoformat(user["expires"])
@@ -245,9 +265,14 @@ class UserManager:
             except: pass
         
         new_exp = start_date + timedelta(days=days)
+        
         await users_col.update_one(
             {"_id": str(user_id)},
-            {"$set": {"expires": new_exp.isoformat(), "plan": "premium", "daily_videos": 0}},
+            {"$set": {
+                "expires": new_exp.isoformat(), 
+                "plan": "premium", 
+                "daily_videos": 0
+            }},
             upsert=True
         )
         return new_exp
@@ -297,15 +322,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     
-    if args and args[0].startswith("ref_"):
-        ref_id = args[0].split("ref_")[1]
-        if ref_id != str(user.id): await user_manager.add_referral(ref_id)
-
-    user_data = await user_manager.get_user(user.id)
-    if not user_data:
+    # Check if user exists BEFORE creating
+    existing_user = await user_manager.get_user(user.id)
+    
+    # If New User
+    if not existing_user:
+        # Create user profile
         user_data = await user_manager.create_user(user.id, user.full_name)
         await send_log(context.bot, "NEW_USER", user)
+        
+        # Check Referral
+        if args and args[0].startswith("ref_"):
+            try:
+                ref_id = args[0].split("ref_")[1]
+                if ref_id != str(user.id): 
+                    # Only add referral if user is NEW
+                    await user_manager.add_referral(ref_id, context)
+            except Exception as e:
+                logger.error(f"Referral error: {e}")
+    else:
+        user_data = existing_user
 
+    # Membership Check
     if not await check_user_membership(context.bot, user.id, FORCE_SUB_CHANNELS):
         buttons = []
         for cid in FORCE_SUB_CHANNELS:
@@ -377,7 +415,6 @@ async def send_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
             })
         
         if update.callback_query: await query.answer()
-        # AUTO DELETE ONLY FOR CONTENT MEDIA
         asyncio.create_task(auto_delete(context, user_id, sent.message_id))
     except Exception as e:
         logger.error(f"Send failed: {e}")
@@ -401,6 +438,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan_name = "Premium" if is_premium else "Free (Limited)"
     total_media = await media_manager.get_media_count()
     watched = user_data.get("daily_videos", 0)
+    refs = user_data.get("referrals", 0)
     
     text = (
         f"📊 <b>My Status</b>\n\n"
@@ -410,7 +448,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎬 Category: {user_data.get('current_category', 'All')}\n"
         f"✅ Watched Today: {watched}\n"
         f"📥 Downloads Today: {watched}\n"
-        f"🔗 Referrals: {user_data.get('referrals', 0)}\n"
+        f"🔗 Total Referrals: {refs}\n"
+        f"🎯 Next Reward At: {(refs // REFERRAL_REQUIREMENT + 1) * REFERRAL_REQUIREMENT} Referrals\n"
         f"📁 Total Media in Bot: {total_media}"
     )
     
@@ -479,7 +518,6 @@ async def proof_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     photo = update.message.photo[-1].file_id
     
-    # STORE PROOF IN DATABASE (QUEUE) INSTEAD OF SENDING TO ADMIN PM
     proof_data = {
         "user_id": user.id,
         "name": user.full_name,
@@ -511,7 +549,6 @@ async def admin_check_proofs(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if query.from_user.id not in ADMINS:
         return
         
-    # Get the oldest pending proof
     proof = await proofs_col.find_one({"status": "pending"}, sort=[("date", 1)])
     
     if not proof:
@@ -522,7 +559,6 @@ async def admin_check_proofs(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    # Show proof inside Bot PM (Admin Panel)
     caption = (
         f"🔔 <b>Pending Proof</b>\n\n"
         f"👤 Name: {proof['name']}\n"
@@ -553,7 +589,6 @@ async def admin_check_proofs(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="HTML"
             )
     except Exception as e:
-        # If media is invalid, delete and skip
         logger.error(f"Error showing proof: {e}")
         await proofs_col.delete_one({"_id": proof["_id"]})
         await query.message.reply_text("❌ Error loading proof. Removed from queue.")
@@ -569,9 +604,6 @@ async def admin_verify_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     context.user_data['target_user_id'] = user_id
     context.user_data['proof_oid'] = proof_oid
-    
-    # We ask for input (days or reason), but the message with the photo stays there
-    # We will delete the photo after processing
     
     if action == "acc":
         await query.message.reply_text(
@@ -601,7 +633,6 @@ async def admin_process_approve(update: Update, context: ContextTypes.DEFAULT_TY
     days = int(text)
     new_exp = await user_manager.set_premium(user_id, days)
     
-    # Notify User
     try:
         await context.bot.send_message(
             user_id,
@@ -613,15 +644,12 @@ async def admin_process_approve(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except: pass
     
-    # Remove from pending list
     from bson.objectid import ObjectId
     try: await proofs_col.delete_one({"_id": ObjectId(proof_oid)})
     except: pass
 
     await update.message.reply_text("✅ Approved.")
     
-    # Trigger next proof automatically
-    # We can't trigger callback directly, so we send a message with button to continue
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Check Next Proof", callback_data="admin_check_proofs")]])
     await update.message.reply_text("🔽 Continue?", reply_markup=kb)
     return ConversationHandler.END
@@ -784,11 +812,16 @@ async def callback_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE
             
     elif data == "plan_referral":
         link = f"https://t.me/{context.bot.username}?start=ref_{user_id}"
+        user = await user_manager.get_user(user_id)
+        count = user.get('referrals', 0)
+        needed = REFERRAL_REQUIREMENT - (count % REFERRAL_REQUIREMENT)
+        
         caption = (
             f"🔗 <b>Referral Program</b>\n\n"
             f"Link: `{link}`\n\n"
-            f"Invite {REFERRAL_REQUIREMENT} friends = 1 Day Premium!\n"
-            f"Your stats: { (await user_manager.get_user(user_id)).get('referrals',0) } invites"
+            f"Invite {REFERRAL_REQUIREMENT} New Friends = 1 Day Premium!\n\n"
+            f"📊 Your Total Invites: <b>{count}</b>\n"
+            f"🚀 Invites needed for next reward: <b>{needed}</b>"
         )
         if update.callback_query.message.photo:
             await update.callback_query.message.edit_caption(caption=caption, reply_markup=get_plans_keyboard(), parse_mode="HTML")
@@ -802,7 +835,7 @@ async def callback_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE
         await admin_check_proofs(update, context)
         
     elif data == "back_to_menu":
-        await update.callback_query.message.edit_text(f"✨ Welcome {user.full_name}!", reply_markup=get_main_keyboard(user_id in ADMINS))
+        await update.callback_query.message.edit_text(f"✨ Welcome!", reply_markup=get_main_keyboard(user_id in ADMINS))
     
     elif data == "back_to_menu_del":
         await update.callback_query.message.delete()
@@ -841,14 +874,12 @@ async def post_init(app: Application):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     
-    # 1. User Sending Proof Conversation
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(proof_start, pattern="^submit_proof$")],
         states={"WAITING_PROOF": [MessageHandler(filters.PHOTO, proof_receive)]},
         fallbacks=[CommandHandler("cancel", proof_cancel)]
     ))
     
-    # 2. Admin Processing Proof Conversation (Approve/Reject)
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_verify_callback, pattern=r"^verify_")],
         states={
@@ -858,14 +889,12 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_op)]
     ))
     
-    # 3. Admin Manual Premium Add
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_premium_start, pattern="^admin_add_premium$")],
         states={"GET_USER_ID": [MessageHandler(filters.TEXT, admin_premium_get_id)], "GET_DAYS": [MessageHandler(filters.TEXT, admin_premium_get_days)]},
         fallbacks=[CommandHandler("cancel", cancel_op)]
     ))
     
-    # 4. Admin Indexing
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_index_start, pattern="^admin_index$")],
         states={"GET_CHANNEL": [MessageHandler(filters.TEXT, admin_index_channel)], "GET_RANGE": [MessageHandler(filters.TEXT, admin_index_run)]},
