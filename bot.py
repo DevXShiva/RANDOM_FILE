@@ -223,14 +223,25 @@ class MediaManager:
 
     async def index_single_message(self, bot, channel_id, message_id):
         try:
+            # Check if already in DB to avoid double entry
             existing = await media_col.find_one({"channel_id": str(channel_id), "message_ids": message_id})
             if existing: return False
-            msg = await bot.get_message(channel_id, message_id)
-            if msg.photo or msg.video or msg.document:
-                await media_col.update_one({"channel_id": str(channel_id)}, {"$addToSet": {"message_ids": message_id}}, upsert=True)
+            
+            # Fetch message with correct parameters
+            msg = await bot.get_message(chat_id=channel_id, message_id=message_id)
+            
+            # Filter for any media type
+            if any([msg.video, msg.document, msg.photo, msg.audio, msg.animation, msg.video_note]):
+                await media_col.update_one(
+                    {"channel_id": str(channel_id)}, 
+                    {"$addToSet": {"message_ids": message_id}}, 
+                    upsert=True
+                )
                 return True
             return False
-        except: return False
+        except Exception as e:
+            logger.debug(f"Skip ID {message_id}: {e}")
+            return False
 
 user_manager = UserManager()
 media_manager = MediaManager()
@@ -273,7 +284,8 @@ async def send_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
     is_prem = await user_manager.is_premium(user_id)
     limit = MAX_DAILY_VIDEOS_PREMIUM if is_prem else MAX_DAILY_VIDEOS_FREE
     if user_data.get("daily_videos", 0) >= limit:
-        await (update.callback_query.message if update.callback_query else update.message).reply_text("📊 <b>Limit Reached!</b>\nBuy Premium for more.", reply_markup=get_plans_keyboard(), parse_mode="HTML")
+        msg = update.callback_query.message if update.callback_query else update.message
+        await msg.reply_text("📊 <b>Limit Reached!</b>\nBuy Premium for more.", reply_markup=get_plans_keyboard(), parse_mode="HTML")
         return
 
     cid = CATEGORY_CHANNELS.get(user_data.get("current_category"), DEFAULT_CHANNEL)
@@ -310,15 +322,16 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_index_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.message.reply_text("📤 <b>Indexing:</b>\n\nSend Channel ID or Link of the database channel:", parse_mode="HTML")
+    await query.message.reply_text("📤 <b>Indexing:</b>\n\nSend Channel ID (e.g. -100...) or Link:", parse_mode="HTML")
     return "GET_CHANNEL"
 
 async def admin_index_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     try:
-        chat = await context.bot.get_chat(text if text.startswith("-") or text.startswith("@") else f"@{text.split('/')[-1]}")
+        target = text if text.startswith("-") or text.startswith("@") else f"@{text.split('/')[-1]}"
+        chat = await context.bot.get_chat(target)
         context.user_data['index_channel'] = chat.id
-        await update.message.reply_text(f"✅ Found: {chat.title}\n\n🔢 Enter Range (e.g., `1-1000`) or send `latest` for last 100 files:", parse_mode="HTML")
+        await update.message.reply_text(f"✅ Found: {chat.title}\n\n🔢 Enter Range (e.g., `1-1000`) or send `latest` for last 100:", parse_mode="HTML")
         return "GET_RANGE"
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -326,20 +339,31 @@ async def admin_index_channel(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def admin_index_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    channel_id = context.user_data['index_channel']
+    channel_id = context.user_data.get('index_channel')
+    if not channel_id: return ConversationHandler.END
+
     start_id, end_id = 0, 0
     if text.lower() == "latest":
         try:
-            temp = await context.bot.send_message(channel_id, ".")
+            temp = await context.bot.send_message(channel_id, "Checking latest ID...")
             end_id = temp.message_id
             await context.bot.delete_message(channel_id, end_id)
             start_id = max(1, end_id - 100)
-        except: return ConversationHandler.END
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error fetching latest: {e}")
+            return ConversationHandler.END
     elif "-" in text:
-        s, e = text.split("-")
-        start_id, end_id = int(s), int(e)
+        try:
+            s, e = text.split("-")
+            start_id, end_id = int(s), int(e)
+        except:
+            await update.message.reply_text("❌ Format: 1-100")
+            return ConversationHandler.END
+    else:
+        return ConversationHandler.END
 
     asyncio.create_task(run_indexing_ui(context.bot, update.effective_user.id, channel_id, start_id, end_id))
+    await update.message.reply_text(f"🚀 Started indexing {start_id} to {end_id}...")
     return ConversationHandler.END
 
 async def run_indexing_ui(bot, admin_id, channel_id, start, end):
@@ -353,12 +377,12 @@ async def run_indexing_ui(bot, admin_id, channel_id, start, end):
             indexed += 1
         
         curr_time = asyncio.get_event_loop().time()
-        if curr_time - last_update > 7: # Edit every 7 seconds
+        if curr_time - last_update > 8:
             processed = i - start + 1
             percent = (processed / total) * 100
             bar = "▓" * int(percent / 10) + "░" * (10 - int(percent / 10))
             text = (f"🚀 <b>Indexing Progress</b>\n\n"
-                    f"📂 Total: <code>{total}</code>\n"
+                    f"📂 Range: <code>{start}-{end}</code>\n"
                     f"✅ Indexed: <code>{indexed}</code>\n"
                     f"🔄 Processed: <code>{processed}/{total}</code>\n"
                     f"📊 Status: <code>{percent:.2f}%</code>\n\n"
@@ -368,14 +392,15 @@ async def run_indexing_ui(bot, admin_id, channel_id, start, end):
             last_update = curr_time
         await asyncio.sleep(0.05)
 
-    await bot.send_message(admin_id, f"✅ <b>Indexing Finished!</b>\n\nTotal Files Added: {indexed}", parse_mode="HTML")
+    await bot.send_message(admin_id, f"✅ <b>Indexing Finished!</b>\n\nTotal Files Added: {indexed}\nChannel: <code>{channel_id}</code>", parse_mode="HTML")
 
-# ================= REST OF THE LOGIC =================
+# ================= ADMIN PANEL & OTHER HANDLERS =================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.from_user.id not in ADMINS: return
-    await query.message.delete() if query.message.photo else None
+    try: await query.message.delete()
+    except: pass
     await context.bot.send_message(query.from_user.id, "⚙️ <b>Admin Panel</b>", reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 async def admin_premium_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -415,10 +440,12 @@ async def plans_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def callback_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data, user_id = query.data, query.from_user.id
+    
     if data == "status": await status_command(update, context)
     elif data in ["send_media", "next"]: await send_media_handler(update, context)
     elif data == "previous":
-        h = (await user_manager.get_user(user_id)).get("last_sent_media", [])
+        ud = await user_manager.get_user(user_id)
+        h = ud.get("last_sent_media", [])
         if len(h) > 1: await send_media_handler(update, context, h[-2])
         else: await query.answer("No History.", show_alert=True)
     elif data == "change_category": await query.message.edit_text("Select Category:", reply_markup=get_category_keyboard())
@@ -431,14 +458,21 @@ async def callback_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE
         u_cnt = await users_col.count_documents({})
         m_cnt = await media_manager.get_media_count()
         await query.message.edit_text(f"📊 Stats:\nUsers: {u_cnt}\nMedia: {m_cnt}", reply_markup=get_admin_keyboard())
-    elif data == "back_to_menu_del": await query.message.delete(); await start_command(update, context)
+    elif data == "back_to_menu_del": 
+        try: await query.message.delete()
+        except: pass
+        await start_command(update, context)
     elif data == "back_to_menu": await query.message.edit_text("✨ Welcome!", reply_markup=get_main_keyboard(user_id in ADMINS))
     elif data == "close": await query.message.delete()
-    await query.answer()
+    elif data == "check_join": await start_command(update, context)
+    
+    try: await query.answer()
+    except: pass
 
 async def save_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = update.channel_post
-    if p and (p.video or p.document or p.photo): await media_manager.add_media(p.chat_id, p.message_id)
+    if p and any([p.video, p.document, p.photo, p.audio, p.animation]):
+        await media_manager.add_media(p.chat_id, p.message_id)
 
 async def web_start():
     app = web.Application()
@@ -449,7 +483,7 @@ async def web_start():
 
 async def post_init(app: Application):
     await web_start()
-    try: await app.bot.send_message(LOG_CHANNEL_ID, "🟢 <b>Bot Online</b>", parse_mode="HTML")
+    try: await app.bot.send_message(LOG_CHANNEL_ID, "🟢 <b>Bot Online & Web Server Started</b>", parse_mode="HTML")
     except: pass
 
 def main():
