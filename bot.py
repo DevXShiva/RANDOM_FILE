@@ -48,10 +48,10 @@ DEFAULT_CHANNEL = -1003896169281
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
-TRIAL_HOURS = 24
 REFERRAL_REQUIREMENT = 1 
 MAX_DAILY_VIDEOS_FREE = 5 
 MAX_DAILY_VIDEOS_PREMIUM = 100
+AUTO_DELETE_SECONDS = 600 # 10 Minutes
 
 CAPTION_TEXT = (
     "ⓘ 𝙏𝙝𝙞𝙨 𝙢𝙚𝙙𝙞𝙖 𝙬𝙞𝙡𝙡 𝙗𝙚 𝙖𝙪𝙩𝙤𝙢𝙖𝙩𝙞𝙘𝙖𝙡𝙡𝙮 𝙙𝙚𝙡𝙚𝙩𝙚𝙙 𝙖𝙛𝙩𝙚𝙧 10 𝙢𝙞𝙣𝙪𝙩𝙚𝙨.\n"
@@ -64,7 +64,6 @@ CAPTION_TEXT = (
 )
 
 # ================= DATABASE SETUP =================
-# Fixed Client for Motor 2.5.1
 client = AsyncIOMotorClient(
     MONGO_URI,
     tls=True,
@@ -74,6 +73,7 @@ client = AsyncIOMotorClient(
 db = client["telegram_bot_db"]
 users_col = db["users"]
 media_col = db["media"]
+proofs_col = db["pending_proofs"] # New collection for storing proofs
 
 # ================= UTILITY FUNCTIONS =================
 
@@ -100,20 +100,10 @@ async def send_log(bot, log_type, user, additional_text=""):
             f"Nᴀᴍᴇ - {user.full_name}\n"
             f"Dᴀᴛᴇ - {get_ist_now().strftime('%d/%m/%Y')}"
         )
-    elif log_type == "PROOF":
-        text = (
-            "#Proof\n\n"
-            f"Iᴅ - <code>{user.id}</code>\n"
-            f"Nᴀᴍᴇ - {user.full_name}\n"
-            f"{additional_text}"
-        )
-    else:
-        text = additional_text
-
-    try:
-        await bot.send_message(LOG_CHANNEL_ID, text, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Log error: {e}")
+        try:
+            await bot.send_message(LOG_CHANNEL_ID, text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Log error: {e}")
 
 async def check_user_membership(bot, user_id, channels):
     if not channels: return True
@@ -170,9 +160,14 @@ def get_category_keyboard():
     buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(buttons)
 
-def get_admin_keyboard():
+async def get_admin_keyboard():
+    # Dynamic keyboard showing pending proof count
+    count = await proofs_col.count_documents({})
+    proof_text = f"🔔 Pending Proofs ({count})" if count > 0 else "🔔 No Pending Proofs"
+    
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Premium to User", callback_data="admin_add_premium")],
+        [InlineKeyboardButton(proof_text, callback_data="admin_check_proofs")],
+        [InlineKeyboardButton("➕ Add Premium (Manual)", callback_data="admin_add_premium")],
         [InlineKeyboardButton("📤 Index Channel", callback_data="admin_index")],
         [InlineKeyboardButton("📊 Bot Stats", callback_data="admin_stats")],
         [InlineKeyboardButton("🔙 Main Menu", callback_data="back_to_menu")]
@@ -382,13 +377,14 @@ async def send_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
             })
         
         if update.callback_query: await query.answer()
+        # AUTO DELETE ONLY FOR CONTENT MEDIA
         asyncio.create_task(auto_delete(context, user_id, sent.message_id))
     except Exception as e:
         logger.error(f"Send failed: {e}")
         if update.callback_query: await query.answer("Media unavailable.", show_alert=True)
 
 async def auto_delete(context, chat_id, mid):
-    await asyncio.sleep(600)
+    await asyncio.sleep(AUTO_DELETE_SECONDS)
     try: await context.bot.delete_message(chat_id, mid)
     except: pass
 
@@ -471,6 +467,8 @@ async def handle_payment_selection(update: Update, context: ContextTypes.DEFAULT
     
     await query.message.edit_caption(caption=caption, reply_markup=get_payment_keyboard(), parse_mode="HTML")
 
+# ================= PROOF SUBMISSION & STORAGE =================
+
 async def proof_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -481,19 +479,20 @@ async def proof_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     photo = update.message.photo[-1].file_id
     
-    caption = f"Plan Request\nUser ID: `{user.id}`"
-    try:
-        await context.bot.send_photo(
-            chat_id=LOG_CHANNEL_ID,
-            photo=photo,
-            caption=f"#Proof\n\nIᴅ - <code>{user.id}</code>\nNᴀᴍᴇ - {user.full_name}\nPlan Request Received.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Failed to forward proof: {e}")
+    # STORE PROOF IN DATABASE (QUEUE) INSTEAD OF SENDING TO ADMIN PM
+    proof_data = {
+        "user_id": user.id,
+        "name": user.full_name,
+        "file_id": photo,
+        "date": get_ist_now(),
+        "status": "pending"
+    }
+    
+    await proofs_col.insert_one(proof_data)
 
     await update.message.reply_text(
-        "✅ <b>Proof Received!</b>\n\nPlease wait for admin approval.",
+        "✅ <b>Proof Sent Successfully!</b>\n\n"
+        "Please wait for admin approval. You will be notified.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard(user.id in ADMINS)
     )
@@ -503,7 +502,155 @@ async def proof_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
-# ================= ADMIN HANDLERS =================
+# ================= ADMIN PROOF PROCESSING (QUEUE) =================
+
+async def admin_check_proofs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id not in ADMINS:
+        return
+        
+    # Get the oldest pending proof
+    proof = await proofs_col.find_one({"status": "pending"}, sort=[("date", 1)])
+    
+    if not proof:
+        await query.message.edit_text(
+            "✅ <b>No Pending Proofs!</b>", 
+            reply_markup=await get_admin_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Show proof inside Bot PM (Admin Panel)
+    caption = (
+        f"🔔 <b>Pending Proof</b>\n\n"
+        f"👤 Name: {proof['name']}\n"
+        f"🆔 ID: <code>{proof['user_id']}</code>\n"
+        f"📅 Date: {proof['date'].strftime('%d/%m/%Y %I:%M %p')}\n\n"
+        "👇 <b>Select Action:</b>"
+    )
+    
+    admin_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Approve", callback_data=f"verify_acc_{proof['user_id']}_{str(proof['_id'])}"),
+         InlineKeyboardButton("❌ Reject", callback_data=f"verify_rej_{proof['user_id']}_{str(proof['_id'])}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+    ])
+    
+    try:
+        if query.message.photo:
+             await query.message.edit_media(
+                media=InputMediaPhoto(media=proof['file_id'], caption=caption, parse_mode="HTML"),
+                reply_markup=admin_markup
+            )
+        else:
+            await query.message.delete()
+            await context.bot.send_photo(
+                chat_id=query.from_user.id,
+                photo=proof['file_id'],
+                caption=caption,
+                reply_markup=admin_markup,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        # If media is invalid, delete and skip
+        logger.error(f"Error showing proof: {e}")
+        await proofs_col.delete_one({"_id": proof["_id"]})
+        await query.message.reply_text("❌ Error loading proof. Removed from queue.")
+
+async def admin_verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data.split("_")
+    action = data[1]
+    user_id = int(data[2])
+    proof_oid = data[3]
+    
+    context.user_data['target_user_id'] = user_id
+    context.user_data['proof_oid'] = proof_oid
+    
+    # We ask for input (days or reason), but the message with the photo stays there
+    # We will delete the photo after processing
+    
+    if action == "acc":
+        await query.message.reply_text(
+            f"✅ <b>Approving User:</b> <code>{user_id}</code>\n\n"
+            "🔢 <b>Enter number of days:</b>",
+            parse_mode="HTML"
+        )
+        return "ADMIN_WAIT_DAYS"
+        
+    elif action == "rej":
+        await query.message.reply_text(
+            f"❌ <b>Rejecting User:</b> <code>{user_id}</code>\n\n"
+            "📝 <b>Enter reason:</b>",
+            parse_mode="HTML"
+        )
+        return "ADMIN_WAIT_REASON"
+
+async def admin_process_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = context.user_data.get('target_user_id')
+    proof_oid = context.user_data.get('proof_oid')
+    
+    if not text.isdigit():
+        await update.message.reply_text("❌ Please enter a valid number.")
+        return "ADMIN_WAIT_DAYS"
+    
+    days = int(text)
+    new_exp = await user_manager.set_premium(user_id, days)
+    
+    # Notify User
+    try:
+        await context.bot.send_message(
+            user_id,
+            f"🎉 <b>Payment Approved!</b>\n\n"
+            f"💎 Plan activated for {days} days.\n"
+            f"📅 Expires: {format_datetime(new_exp)}\n\n"
+            "Enjoy premium features!",
+            parse_mode="HTML"
+        )
+    except: pass
+    
+    # Remove from pending list
+    from bson.objectid import ObjectId
+    try: await proofs_col.delete_one({"_id": ObjectId(proof_oid)})
+    except: pass
+
+    await update.message.reply_text("✅ Approved.")
+    
+    # Trigger next proof automatically
+    # We can't trigger callback directly, so we send a message with button to continue
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Check Next Proof", callback_data="admin_check_proofs")]])
+    await update.message.reply_text("🔽 Continue?", reply_markup=kb)
+    return ConversationHandler.END
+
+async def admin_process_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reason = update.message.text
+    user_id = context.user_data.get('target_user_id')
+    proof_oid = context.user_data.get('proof_oid')
+    
+    try:
+        await context.bot.send_message(
+            user_id,
+            f"❌ <b>Payment Rejected</b>\n\n"
+            f"📝 Reason: {reason}",
+            parse_mode="HTML"
+        )
+    except: pass
+    
+    from bson.objectid import ObjectId
+    try: await proofs_col.delete_one({"_id": ObjectId(proof_oid)})
+    except: pass
+
+    await update.message.reply_text("✅ Rejected.")
+    
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Check Next Proof", callback_data="admin_check_proofs")]])
+    await update.message.reply_text("🔽 Continue?", reply_markup=kb)
+    return ConversationHandler.END
+
+# ================= ADMIN HANDLERS (General) =================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -512,11 +659,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Admins Only!", show_alert=True)
         return
     
+    markup = await get_admin_keyboard()
+    
     if query.message.photo:
         await query.message.delete()
-        await context.bot.send_message(query.from_user.id, "⚙️ <b>Admin Panel</b>", reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await context.bot.send_message(query.from_user.id, "⚙️ <b>Admin Panel</b>", reply_markup=markup, parse_mode="HTML")
     else:
-        await query.message.edit_text("⚙️ <b>Admin Panel</b>", reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await query.message.edit_text("⚙️ <b>Admin Panel</b>", reply_markup=markup, parse_mode="HTML")
 
 async def admin_premium_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -649,8 +798,11 @@ async def callback_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif data == "admin_panel":
         await admin_panel(update, context)
         
+    elif data == "admin_check_proofs":
+        await admin_check_proofs(update, context)
+        
     elif data == "back_to_menu":
-        await update.callback_query.message.edit_text(f"✨ Welcome!", reply_markup=get_main_keyboard(user_id in ADMINS))
+        await update.callback_query.message.edit_text(f"✨ Welcome {user.full_name}!", reply_markup=get_main_keyboard(user_id in ADMINS))
     
     elif data == "back_to_menu_del":
         await update.callback_query.message.delete()
@@ -663,7 +815,7 @@ async def callback_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif data == "admin_stats":
         cnt = await users_col.count_documents({})
         med = await media_manager.get_media_count()
-        await update.callback_query.message.edit_text(f"📊 Users: {cnt}\n📁 Media: {med}", reply_markup=get_admin_keyboard())
+        await update.callback_query.message.edit_text(f"📊 Users: {cnt}\n📁 Media: {med}", reply_markup=await get_admin_keyboard())
 
 async def save_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.channel_post
@@ -689,18 +841,31 @@ async def post_init(app: Application):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     
+    # 1. User Sending Proof Conversation
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(proof_start, pattern="^submit_proof$")],
         states={"WAITING_PROOF": [MessageHandler(filters.PHOTO, proof_receive)]},
         fallbacks=[CommandHandler("cancel", proof_cancel)]
     ))
     
+    # 2. Admin Processing Proof Conversation (Approve/Reject)
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_verify_callback, pattern=r"^verify_")],
+        states={
+            "ADMIN_WAIT_DAYS": [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_approve)],
+            "ADMIN_WAIT_REASON": [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_reject)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_op)]
+    ))
+    
+    # 3. Admin Manual Premium Add
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_premium_start, pattern="^admin_add_premium$")],
         states={"GET_USER_ID": [MessageHandler(filters.TEXT, admin_premium_get_id)], "GET_DAYS": [MessageHandler(filters.TEXT, admin_premium_get_days)]},
         fallbacks=[CommandHandler("cancel", cancel_op)]
     ))
     
+    # 4. Admin Indexing
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_index_start, pattern="^admin_index$")],
         states={"GET_CHANNEL": [MessageHandler(filters.TEXT, admin_index_channel)], "GET_RANGE": [MessageHandler(filters.TEXT, admin_index_run)]},
