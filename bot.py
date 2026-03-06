@@ -36,8 +36,8 @@ ADMINS_STR = os.getenv("ADMIN_IDS", "5298223577")
 ADMINS = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip().isdigit()]
 
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "cinewood_flix") 
-UPI_ID = os.getenv("UPI_ID", "your-upi@paytm") 
-PLAN_IMG_URL = "https://graph.org/file/56b5deb73f3b132e2bb73.jpg" 
+UPI_ID = os.getenv("UPI_ID", "Amit0000@fam") 
+PLAN_IMG_URL = "QR.jpg" 
 
 # ================= CHANNEL SETUP =================
 FORCE_SUB_CHANNELS = [-1003627956964]
@@ -49,7 +49,7 @@ DEFAULT_CHANNEL = -1002726601987
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
 TRIAL_HOURS = 24
-REFERRAL_REQUIREMENT = 3 
+REFERRAL_REQUIREMENT = 1 
 MAX_DAILY_VIDEOS_FREE = 5 
 MAX_DAILY_VIDEOS_PREMIUM = 100
 
