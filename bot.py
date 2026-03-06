@@ -42,9 +42,9 @@ PLAN_IMG_URL = "https://graph.org/file/56b5deb73f3b132e2bb73.jpg"
 # ================= CHANNEL SETUP =================
 FORCE_SUB_CHANNELS = [-1003627956964]
 CATEGORY_CHANNELS = {
-    "🎬 All ": -1003626042952,
+    "🎬 All ": -1002726601987,
 }
-DEFAULT_CHANNEL = -1003626042952
+DEFAULT_CHANNEL = -1002726601987
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
