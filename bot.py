@@ -42,9 +42,9 @@ PLAN_IMG_URL = "QR.jpg"
 # ================= CHANNEL SETUP =================
 FORCE_SUB_CHANNELS = [-1003627956964]
 CATEGORY_CHANNELS = {
-    "🎬 All ": -1003896169281,
+    "🎬 All ": -1003776098672,
 }
-DEFAULT_CHANNEL = -1003896169281
+DEFAULT_CHANNEL = -1003776098672
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
@@ -57,7 +57,7 @@ CAPTION_TEXT = (
     "ⓘ 𝙏𝙝𝙞𝙨 𝙢𝙚𝙙𝙞𝙖 𝙬𝙞𝙡𝙡 𝙗𝙚 𝙖𝙪𝙩𝙤𝙢𝙖𝙩𝙞𝙘𝙖𝙡𝙡𝙮 𝙙𝙚𝙡𝙚𝙩𝙚𝙙 𝙖𝙛𝙩𝙚𝙧 10 𝙢𝙞𝙣𝙪𝙩𝙚𝙨.\n"
     "𝙋𝙡𝙚𝙖𝙨𝙚 𝙗𝙤𝙤𝙠𝙢𝙖𝙧𝙠 𝙤𝙧 𝙙𝙤𝙬𝙣𝙡𝙤𝙖𝙙 𝙞𝙛 𝙮𝙤𝙪 𝙬𝙖𝙣𝙩 𝙩𝙤 𝙬𝙖𝙩𝙘𝙝 𝙡𝙖𝙩𝙚𝙧.\n\n\n"
     "━━━━━━━━━━━━━━━\n"
-    "🤖 𝙈𝙤𝙫𝙞𝙚 𝘽𝙤𝙤𝙩 : @ChaudharyAutoFilterbot\n"
+    "🤖 𝙈𝙤𝙫𝙞𝙚 𝘽𝙤𝙩 : @ChaudharyAutoFilterbot\n"
     "📢 𝘽𝙖𝙘𝙠𝙪𝙥 𝘾𝙝𝙖𝙣𝙣𝙚𝙡 : @cinewood_flix\n"
     "🔒 𝙋𝙧𝙞𝙫𝙖𝙩𝙚 𝘾𝙝𝙖𝙣𝙣𝙚𝙡 : https://t.me/+IKEPBquEvmc0ODhl\n"
     "━━━━━━━━━━━━━━━"
