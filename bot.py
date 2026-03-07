@@ -50,7 +50,7 @@ DEFAULT_CHANNEL = -1003776098672
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
 REFERRAL_REQUIREMENT = 1  # Users needed for 1 Day Free Premium
-MAX_DAILY_VIDEOS_FREE = 5 
+MAX_DAILY_VIDEOS_FREE = 3 
 MAX_DAILY_VIDEOS_PREMIUM = 100
 AUTO_DELETE_SECONDS = 600 # 10 Minutes
 
