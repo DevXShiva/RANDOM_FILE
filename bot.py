@@ -18,6 +18,7 @@ from telegram.ext import (
     ConversationHandler,
     Application
 )
+from telegram.error import TelegramError
 
 # ================= LOGGING SETUP =================
 logging.basicConfig(
@@ -211,24 +212,14 @@ class UserManager:
         return False
 
     async def add_referral(self, referrer_id, context):
-        """
-        Increments referral count.
-        If user hits the requirement (e.g., 3, 6, 9...), grants 1 Day Premium automatically.
-        """
         referrer = await self.get_user(referrer_id)
         if not referrer: return
 
-        # Increment count
         new_refs = referrer.get("referrals", 0) + 1
         await self.update_user(referrer_id, {"referrals": new_refs})
 
-        # Check if they hit the target (Modulo logic)
-        # e.g., if req=3, then 3, 6, 9 triggers the reward
         if new_refs % REFERRAL_REQUIREMENT == 0:
-            # Grant 1 Day Premium
             new_exp = await self.set_premium(referrer_id, 1)
-            
-            # Send Notification
             try:
                 await context.bot.send_message(
                     chat_id=referrer_id,
@@ -257,7 +248,6 @@ class UserManager:
         user = await self.get_user(user_id)
         start_date = get_ist_now().replace(tzinfo=None)
         
-        # If user is already premium, add days to their current expiry
         if user:
             try:
                 current_exp = datetime.fromisoformat(user["expires"])
@@ -316,34 +306,83 @@ class MediaManager:
 user_manager = UserManager()
 media_manager = MediaManager()
 
+# ================= BROADCAST FEATURE =================
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    # 1. Check if Admin
+    if user.id not in ADMINS:
+        return
+
+    # 2. Check if Reply
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠ <b>Please reply to a message to broadcast it.</b>", parse_mode="HTML")
+        return
+
+    target_msg = update.message.reply_to_message
+    
+    # 3. Start Notification
+    status_msg = await update.message.reply_text("🚀 <b>Broadcast Started...</b>", parse_mode="HTML")
+    
+    all_users = users_col.find({})
+    total_users = await users_col.count_documents({})
+    
+    success = 0
+    blocked = 0
+    deleted = 0
+    
+    # 4. Loop through users
+    async for u in all_users:
+        try:
+            # COPY the message (works for Text, Photo, Video, File, etc.)
+            await context.bot.copy_message(
+                chat_id=int(u['_id']),
+                from_chat_id=target_msg.chat_id,
+                message_id=target_msg.message_id
+            )
+            success += 1
+            await asyncio.sleep(0.05) # Small delay to avoid FloodWait
+        except TelegramError as e:
+            if "blocked" in str(e).lower():
+                blocked += 1
+            elif "user is deactivated" in str(e).lower():
+                deleted += 1
+            else:
+                pass
+    
+    # 5. Final Report
+    text = (
+        f"✅ <b>Broadcast Completed!</b>\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"📩 Sent: {success}\n"
+        f"🚫 Blocked: {blocked}\n"
+        f"🗑 Deleted: {deleted}"
+    )
+    await status_msg.edit_text(text, parse_mode="HTML")
+
 # ================= MAIN FEATURES =================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     
-    # Check if user exists BEFORE creating
     existing_user = await user_manager.get_user(user.id)
     
-    # If New User
     if not existing_user:
-        # Create user profile
         user_data = await user_manager.create_user(user.id, user.full_name)
         await send_log(context.bot, "NEW_USER", user)
         
-        # Check Referral
         if args and args[0].startswith("ref_"):
             try:
                 ref_id = args[0].split("ref_")[1]
                 if ref_id != str(user.id): 
-                    # Only add referral if user is NEW
                     await user_manager.add_referral(ref_id, context)
             except Exception as e:
                 logger.error(f"Referral error: {e}")
     else:
         user_data = existing_user
 
-    # Membership Check
     if not await check_user_membership(context.bot, user.id, FORCE_SUB_CHANNELS):
         buttons = []
         for cid in FORCE_SUB_CHANNELS:
@@ -874,6 +913,7 @@ async def post_init(app: Application):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     
+    # Conversations
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(proof_start, pattern="^submit_proof$")],
         states={"WAITING_PROOF": [MessageHandler(filters.PHOTO, proof_receive)]},
@@ -901,7 +941,11 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_op)]
     ))
 
+    # Commands
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    
+    # Handlers
     app.add_handler(CallbackQueryHandler(callback_dispatcher))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, save_media))
     
