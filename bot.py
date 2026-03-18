@@ -43,14 +43,14 @@ PLAN_IMG_URL = "QR.jpg"
 # ================= CHANNEL SETUP =================
 FORCE_SUB_CHANNELS = [-1003627956964]
 CATEGORY_CHANNELS = {
-    "🎬 All ": -1003776098672,
+    "🎬 All ": -1003896169281,
 }
-DEFAULT_CHANNEL = -1003776098672
+DEFAULT_CHANNEL = -1003896169281
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
 REFERRAL_REQUIREMENT = 1  # Users needed for 1 Day Free Premium
-MAX_DAILY_VIDEOS_FREE = 3 
+MAX_DAILY_VIDEOS_FREE = 6 
 MAX_DAILY_VIDEOS_PREMIUM = 100
 AUTO_DELETE_SECONDS = 600 # 10 Minutes
 
@@ -310,19 +310,13 @@ media_manager = MediaManager()
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    # 1. Check if Admin
-    if user.id not in ADMINS:
-        return
+    if user.id not in ADMINS: return
 
-    # 2. Check if Reply
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠ <b>Please reply to a message to broadcast it.</b>", parse_mode="HTML")
         return
 
     target_msg = update.message.reply_to_message
-    
-    # 3. Start Notification
     status_msg = await update.message.reply_text("🚀 <b>Broadcast Started...</b>", parse_mode="HTML")
     
     all_users = users_col.find({})
@@ -332,26 +326,20 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blocked = 0
     deleted = 0
     
-    # 4. Loop through users
     async for u in all_users:
         try:
-            # COPY the message (works for Text, Photo, Video, File, etc.)
             await context.bot.copy_message(
                 chat_id=int(u['_id']),
                 from_chat_id=target_msg.chat_id,
                 message_id=target_msg.message_id
             )
             success += 1
-            await asyncio.sleep(0.05) # Small delay to avoid FloodWait
+            await asyncio.sleep(0.05) 
         except TelegramError as e:
-            if "blocked" in str(e).lower():
-                blocked += 1
-            elif "user is deactivated" in str(e).lower():
-                deleted += 1
-            else:
-                pass
+            if "blocked" in str(e).lower(): blocked += 1
+            elif "user is deactivated" in str(e).lower(): deleted += 1
+            else: pass
     
-    # 5. Final Report
     text = (
         f"✅ <b>Broadcast Completed!</b>\n\n"
         f"👥 Total Users: {total_users}\n"
@@ -444,7 +432,15 @@ async def send_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     try:
-        sent = await context.bot.copy_message(user_id, cid, mid, caption=CAPTION_TEXT, reply_markup=get_media_keyboard())
+        # PROTECT_CONTENT = TRUE added here
+        sent = await context.bot.copy_message(
+            chat_id=user_id, 
+            from_chat_id=cid, 
+            message_id=mid, 
+            caption=CAPTION_TEXT, 
+            reply_markup=get_media_keyboard(),
+            protect_content=True # <--- Prevents Forwarding and Saving
+        )
         
         if not specific_mid:
             new_history = (user_data.get("last_sent_media", []) + [mid])[-100:]
