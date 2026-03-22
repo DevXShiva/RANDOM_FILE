@@ -43,9 +43,9 @@ PLAN_IMG_URL = "QR.jpg"
 # ================= CHANNEL SETUP =================
 FORCE_SUB_CHANNELS = [-1003627956964]
 CATEGORY_CHANNELS = {
-    "🎬 All ": -1003896169281,
+    "🎬 All ": -1003776098672,
 }
-DEFAULT_CHANNEL = -1003896169281
+DEFAULT_CHANNEL = -1003776098672
 
 # ================= BOT SETTINGS =================
 IST = pytz.timezone('Asia/Kolkata')
