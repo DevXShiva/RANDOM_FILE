@@ -141,9 +141,9 @@ def get_media_keyboard():
 
 def get_plans_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("1 Month - ₹50", callback_data="pay_1"),
-         InlineKeyboardButton("2 Months - ₹90", callback_data="pay_2")],
-        [InlineKeyboardButton("3 Months - ₹130", callback_data="pay_3")],
+        [InlineKeyboardButton("2 Days - ₹9", callback_data="pay_1"),
+         InlineKeyboardButton("7 Days - ₹29", callback_data="pay_2")],
+        [InlineKeyboardButton("1 Months - ₹99", callback_data="pay_3")],
         [InlineKeyboardButton(f"🎁 Free 1 Day ({REFERRAL_REQUIREMENT} Refers)", callback_data="plan_referral")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu_del")] 
     ])
@@ -522,9 +522,9 @@ async def handle_payment_selection(update: Update, context: ContextTypes.DEFAULT
     data = query.data
     
     plan_map = {
-        "pay_1": ("1 Month", "50"),
-        "pay_2": ("2 Months", "90"),
-        "pay_3": ("3 Months", "130")
+        "pay_1": ("2 Days", "9"),
+        "pay_2": ("7 Days", "29"),
+        "pay_3": ("1 Months", "99")
     }
     
     name, price = plan_map[data]
